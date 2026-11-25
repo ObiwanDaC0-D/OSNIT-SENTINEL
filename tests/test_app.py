@@ -65,7 +65,11 @@ def test_security_boundary(client):
     assert "frame-ancestors 'none'" in r.headers['content-security-policy']
     assert r.headers['cache-control']=='no-store'
 
-def test_research_scope_and_validation(client):
+def test_research_scope_and_validation(client, monkeypatch):
+    import httpx
+    async def dns(self, url, **kwargs):
+        return httpx.Response(200, json={"Status":0,"Answer":[]}, request=httpx.Request("GET",url))
+    monkeypatch.setattr(httpx.AsyncClient,"get",dns)
     cid=case(client,'public-research')
     base={'kind':'username','query':'example','consent':True}
     assert client.post(f'/api/cases/{cid}/research',json=base).status_code==403
@@ -75,7 +79,7 @@ def test_research_scope_and_validation(client):
     assert client.post(f'/api/cases/{cid}/research',json=base).status_code==422
     base['consent']=True
     r=client.post(f'/api/cases/{cid}/research',json=base)
-    assert len(r.json()['leads'])==3
+    assert len(r.json()['sources'])==5
     assert client.get('/api/email-check').json()['url']=='https://haveibeenpwned.com/'
 
 def test_username_provider_outcomes(client,monkeypatch):
@@ -97,3 +101,45 @@ def test_username_provider_outcomes(client,monkeypatch):
         return httpx.Response(429,request=httpx.Request('GET',url))
     monkeypatch.setattr(httpx.AsyncClient,'get',limited)
     assert client.post(f'/api/cases/{cid}/research',json=data).status_code==502
+
+
+@pytest.mark.parametrize('kind', ['professional', 'document'])
+def test_automatic_publications(client, monkeypatch, kind):
+    import httpx
+    async def publications(self, url, **kwargs):
+        assert url == 'https://api.crossref.org/works'
+        assert kwargs['params']['rows'] == 10
+        return httpx.Response(200, json={'message':{'items':[{'DOI':'10.1234/example','title':['Synthetic publication'],'publisher':'Example Press'}]}}, request=httpx.Request('GET',url))
+    monkeypatch.setattr(httpx.AsyncClient,'get',publications)
+    cid=case(client,'public-research')
+    body={'kind':kind,'query':'Synthetic author','consent':True}
+    first=client.post(f'/api/cases/{cid}/research',json=body)
+    assert first.status_code==200
+    assert first.json()['findings'][0]['saved'] is True
+    assert client.post(f'/api/cases/{cid}/research',json=body).json()['findings'][0]['saved'] is False
+    records=client.get(f'/api/cases/{cid}').json()['evidence']
+    assert len(records)==1
+    assert records[0]['status']=='unverified'
+    assert 'Checked:' in records[0]['notes']
+
+@pytest.mark.parametrize('status,label', [(403,'access restricted'),(429,'availability unconfirmed'),(500,'availability unconfirmed')])
+def test_provider_availability(client,monkeypatch,status,label):
+    import httpx
+    async def failed(self,url,**kwargs):
+        return httpx.Response(status,request=httpx.Request('GET',url))
+    monkeypatch.setattr(httpx.AsyncClient,'get',failed)
+    cid=case(client)
+    r=client.post(f'/api/cases/{cid}/research',json={'kind':'document','query':'example topic','consent':True})
+    assert r.status_code==200
+    assert r.json()['sources'][0]['availability']==label
+    assert r.json()['findings']==[]
+
+def test_dns_records_saved(client,monkeypatch):
+    import httpx
+    async def dns(self,url,**kwargs):
+        return httpx.Response(200,json={'Status':0,'Answer':[{'name':'example.org.','type':1,'data':'192.0.2.1','TTL':60}]},request=httpx.Request('GET',url))
+    monkeypatch.setattr(httpx.AsyncClient,'get',dns)
+    cid=case(client)
+    r=client.post(f'/api/cases/{cid}/research',json={'kind':'domain','query':'example.org','consent':True})
+    assert len(r.json()['findings'])==5
+    assert len(client.get(f'/api/cases/{cid}').json()['evidence'])==5

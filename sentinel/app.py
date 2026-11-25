@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from sentinel.research import collect
 
 STATIC = Path(__file__).parent / 'static'
 
@@ -178,22 +179,32 @@ def create_app(db_path=None):
                 if result.status_code == 404:
                     return {'findings': [], 'message': 'No GitHub account found; this says nothing about other providers.'}
                 result.raise_for_status()
-                return {'findings': [{'title': 'GitHub username candidate', 'source': 'https://github.com/' + quote(q), 'notes': 'Public account exists. Username match is not identity proof.', 'status': 'unverified'}]}
+                finding = {'title': 'GitHub username candidate', 'source': 'https://github.com/' + quote(q), 'notes': 'Public account exists. Username match is not identity proof.', 'status': 'unverified'}
+                finding['notes'] += '\nAvailability: publicly accessible\nChecked: ' + now()
+                saved = add_evidence(cid, Evidence(**finding))
+                finding.update(evidence_id=saved['id'], availability='publicly accessible')
+                return {'findings': [finding], 'message': 'Candidate saved as unverified evidence.'}
             except httpx.HTTPError:
                 raise HTTPException(502, 'Provider unavailable or rate limited; no conclusion can be drawn')
         if item.kind == 'domain':
             q = q.lower().rstrip('.')
             if not re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}', q):
                 raise HTTPException(422, 'Enter a public domain name, without a URL or IP address')
-            links = [('ICANN registration lookup', 'https://lookup.icann.org/en/lookup?name=' + quote(q)),
-                     ('Public DNS records', 'https://dns.google/resolve?name=' + quote(q) + '&type=MX'),
-                     ('Archived website', 'https://web.archive.org/web/*/https://' + q)]
-        elif item.kind == 'professional':
-            links = [('ORCID professional research', 'https://orcid.org/orcid-search/search?searchQuery=' + quote(q)),
-                     ('Published research', 'https://search.crossref.org/?q=' + quote(q))]
-        else:
-            links = [('Public documents and publications', 'https://search.crossref.org/?q=' + quote(q))]
-        return {'leads': [{'title': title, 'url': url} for title, url in links], 'message': 'Research links only: review the source before recording evidence. No identity inference or automated collection.'}
+        result = await collect(item.kind, q)
+        # Save automatic findings as unverified evidence; keep exact repeats out.
+        for finding in result['findings']:
+            finding['notes'] += "\nAvailability: " + finding['availability'] + "\nChecked: " + finding['checked']
+            with db() as conn:
+                existing = conn.execute('SELECT id FROM evidence WHERE case_id=? AND source=? AND title=?',
+                    (cid, finding['source'], finding['title'])).fetchone()
+            if existing:
+                finding['evidence_id'] = existing['id']
+                finding['saved'] = False
+            else:
+                saved = add_evidence(cid, Evidence(**{k:v for k,v in finding.items() if k in Evidence.model_fields}))
+                finding['evidence_id'] = saved['id']
+                finding['saved'] = True
+        return result
 
     @app.get('/api/email-check')
     def email_check():

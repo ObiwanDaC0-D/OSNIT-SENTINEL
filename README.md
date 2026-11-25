@@ -25,12 +25,15 @@ Open http://127.0.0.1:8765. The UI and assets run locally without CDNs, telemetr
 ## Implemented capabilities and honest limits
 
 - GitHub username existence adapter: timeout, no redirect following, explicit unavailable/rate-limit errors; collects no profile details. Candidates require review before saving.
-- Professional and document research: curated ORCID/Crossref search links. Domain research: ICANN, public DNS, and Wayback links. These are **manual research handoffs**, not automatically retrieved findings.
+- Professional and document research: automatically retrieves up to 10 Crossref publication metadata matches per query. Name searches are candidate author matches, not identity confirmation.
+- Domain research: concurrently retrieves A, AAAA, MX, NS, and CAA answers through Google Public DNS. No active scanning or contact-detail collection.
+- Findings are automatically saved as unverified evidence with source citations and check timestamps. Publication/DNS repeats reuse matching source/title records; changed records should be reviewed separately. Username checks currently add a new dated observation each run.
+- Source status distinguishes publicly accessible metadata, access restricted (401/403), and availability unconfirmed (errors/rate limits). It does not claim to know whether linked full text is publicly available. Restricted endpoints are skipped without bypass attempts.
 - Email exposure: **provider-hosted verification handoff** to Have I Been Pwned. Complete the provider's email verification/notification flow for an address you control, then manually record a minimal audit conclusion. Sentinel does not itself verify ownership, query breach APIs, or accept/store an email address. A checkbox is not ownership verification.
 - Document evidence: manually supplied public citations and text excerpts. No file upload, PDF extraction, OCR, or metadata extraction.
 - Cases, evidence classifications, capture timestamps, SHA-256 record fingerprints, relationship rationales, JSON reports, deletion, and persistent SQLite storage.
 - The SHA-256 value fingerprints the submitted evidence fields; it does not certify the source, preserve a remote page, or provide a tamper-proof audit trail.
-- Optional Ollama, Sherlock, broad multi-provider scanning, concurrent job queues, and automated ingestion are not included. The relationship view uses local SVG rather than Cytoscape to avoid an extra dependency.
+- Optional Ollama, Sherlock, broad multi-provider scanning, concurrent job queues, and broad web crawling are not included. The relationship view uses local SVG rather than Cytoscape to avoid an extra dependency.
 
 ## Data protection
 
@@ -51,3 +54,5 @@ Tests use temporary databases and mocked provider responses, with synthetic `exa
 ## Architecture
 
 `sentinel/app.py`: API factory, validation, SQLite transactions, research adapter and source handoffs. `sentinel/static/`: responsive, dependency-free UI. `sentinel/__main__.py`: supported local launcher. `tests/`: functional/security regression checks. Provider handoffs return leads distinct from evidence. Automatic identity correlation is intentionally absent.
+
+Provider specifications: https://www.crossref.org/documentation/retrieve-metadata/rest-api and https://developers.google.com/speed/public-dns/docs/doh/json .
